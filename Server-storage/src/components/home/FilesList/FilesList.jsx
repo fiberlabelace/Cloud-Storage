@@ -1,14 +1,95 @@
-import React from 'react'
+import React from 'react';
+import FileCard from './FileCard';
 
-const FilesList = ({files}) => {
-    console.log(files)
+const formatBytes = (bytes) => {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
+};
+
+const FilesList = ({ files, viewMode, fetchFiles, onPreview }) => {
+  const handleDelete = (filename) => {
+    fetch(`https://fiber-label.tailfc4e35.ts.net/api/files/${encodeURIComponent(filename)}`, { method: 'DELETE' })
+      .then((res) => res.json())
+      .then(() => fetchFiles())
+      .catch((err) => console.error(err));
+  };
+
+  const handleDownload = (filename) => {
+    window.location.href = `https://fiber-label.tailfc4e35.ts.net/api/files/download/${encodeURIComponent(filename)}`;
+  };
+
+  if (files.length === 0) {
+    return (
+      <div className="text-center py-5 text-muted">
+        <div className="fs-1 mb-2">📁</div>
+        <p>No files found in drive.</p>
+      </div>
+    );
+  }
+
+  if (viewMode === 'grid') {
+    return (
+      <div className="row row-cols-1 row-cols-sm-2 row-cols-md-3 row-cols-lg-4 g-3">
+        {files.map((file) => (
+          <div className="col" key={file.name}>
+            <FileCard
+              file={file}
+              onPreview={onPreview}
+              onDownload={handleDownload}
+              onDelete={handleDelete}
+            />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   return (
-    <div>
-      {files.map(file=>(
-        <div key={file}><h1>{file}</h1></div>
-      ))}
+    <div className="table-responsive">
+      <table className="table table-hover align-middle">
+        <thead className="table-light">
+          <tr>
+            <th>Name</th>
+            <th>Size</th>
+            <th>Last Modified</th>
+            <th className="text-end">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {files.map((file) => (
+            <tr
+              key={file.name}
+              style={{ cursor: 'pointer' }}
+              onClick={() => onPreview(file)}
+            >
+              <td className="fw-semibold text-truncate" style={{ maxWidth: '250px' }}>
+                {file.name}
+              </td>
+              <td>{formatBytes(file.size)}</td>
+              <td>{new Date(file.modifiedAt).toLocaleString()}</td>
+              <td className="text-end" onClick={(e) => e.stopPropagation()}>
+                <button
+                  className="btn btn-sm btn-outline-primary me-2"
+                  onClick={() => handleDownload(file.name)}
+                >
+                  Download
+                </button>
+                <button
+                  className="btn btn-sm btn-outline-danger"
+                  onClick={() => handleDelete(file.name)}
+                >
+                  Delete
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
-  )
-}
+  );
+};
 
-export default FilesList
+export default FilesList;

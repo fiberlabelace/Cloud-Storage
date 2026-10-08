@@ -1,42 +1,76 @@
-import React, {useState} from 'react'
-import './Side.scss'
+import React, { useRef } from 'react';
+import './Side.scss';
 
-const Side = ({setFiles}) => {
-  const [file, setFile] = useState(null);
+const Side = ({ fetchFiles }) => {
+  const fileInputRef = useRef(null);
 
-  const getFiles = () => {
-    fetch('http://100.83.204.64:3000/api/files')
-      .then(response => response.json())
-      .then(data => {
-        setFiles(data.filename);
-      })
-  }
+  const handleFileChange = (e) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
 
-  const uploadFile = () => {
     const formData = new FormData();
-    for(const f of file){
+    for (const f of files) {
       formData.append('myFile', f);
     }
-    fetch('http://100.83.204.64:3000/api/files', {
+
+    // Change:
+    fetch('https://fiber-label.tailfc4e35.ts.net/api/files', {
       method: 'POST',
       body: formData
     })
-  }
-  
-  return (
-    <div className='bg-body-tertiary d-none d-md-flex flex-column side min-vh-100'>
-        <input type="file" multiple onChange={(event) => 
-          setFile(event.target.files)
-        }/>
-        <button type="button" onClick={uploadFile} className="btn btn-outline-primary btn-lg mb-4 mt-3 mx-auto">Upload</button>
-        <button onClick={getFiles}>Get Files</button>
-        <div className='ms-3 d-flex flex-column gap-3 align-items-start'>
-           <button type="button" className="btn btn-outline-secondary rounded-4 folder">Layered Files</button> 
-           <button type="button" className="btn btn-outline-secondary rounded-4 folder">Digital Courses</button> 
-           <button type="button" className="btn btn-outline-secondary rounded-4 folder">Learning Materials</button> 
-        </div>
-    </div>
-  )
-}
+      .then((res) => res.json())
+      .then(() => {
+        fileInputRef.current.value = '';
+        fetchFiles();
+      })
+      .catch((err) => console.error(err));
+  };
 
-export default Side
+  return (
+    <aside className="gdrive-sidebar p-3 d-flex flex-column gap-2">
+      <input
+        type="file"
+        ref={fileInputRef}
+        multiple
+        className="d-none"
+        onChange={handleFileChange}
+      />
+
+      <button
+        type="button"
+        className="btn btn-white shadow-sm rounded-pill py-2 px-4 d-flex align-items-center gap-2 fw-semibold border mb-3 gdrive-new-btn"
+        onClick={() => fileInputRef.current.click()}
+      >
+        <span className="fs-5 text-primary">+</span>
+        <span>New Upload</span>
+      </button>
+
+      <div className="nav flex-column nav-pills gap-1">
+        <button className="nav-link active text-start rounded-pill px-3">
+          📁 My Drive
+        </button>
+        <button className="nav-link text-dark text-start rounded-pill px-3">
+          💻 Computers
+        </button>
+        <button className="nav-link text-dark text-start rounded-pill px-3">
+          ⭐ Starred
+        </button>
+        <button className="nav-link text-dark text-start rounded-pill px-3">
+          🗑️ Trash
+        </button>
+      </div>
+
+      <div className="mt-auto border-top pt-3">
+        <button
+          type="button"
+          onClick={fetchFiles}
+          className="btn btn-sm btn-outline-secondary w-100 rounded-pill"
+        >
+          🔄 Refresh Drive
+        </button>
+      </div>
+    </aside>
+  );
+};
+
+export default Side;

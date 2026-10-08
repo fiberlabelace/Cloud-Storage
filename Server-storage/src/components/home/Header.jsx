@@ -1,29 +1,36 @@
-import React from 'react'
+import React from 'react';
 
-
-const Header = () => {
+const Header = ({ searchQuery, setSearchQuery }) => {
   return (
-    <div>
-      <div>
-        <nav className="navbar navbar-expand-lg bg-body-tertiary">
-          <div className="container-fluid">
-            <img src="./public/logo.png" alt="Logo" className="navbar-brand ms-5" width="150vw" height="auto"/>
-            <button className="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarSupportedContent" aria-controls="navbarSupportedContent" aria-expanded="false" aria-label="Toggle navigation">
-              <span className="navbar-toggler-icon" />
-            </button>
-            <div className="collapse navbar-collapse" id="navbarSupportedContent">
-              <form className="d-flex w-50 mx-auto" role="search">
-                <input className="form-control me-2 rounded-pill" type="search" placeholder="Search" aria-label="Search" />
-              </form>
-              <a className="user">
-                <img src="./public/user.png" alt="User" className="navbar-brand ms-5" width="50vw" height="auto"/>
-              </a>
-            </div>
-          </div>
-        </nav>
-      </div>
-    </div>
-  )
-}
+    <nav className="navbar navbar-expand bg-transparent px-4 py-2 border-bottom">
+      <div className="container-fluid d-flex align-items-center justify-content-between">
+        <div className="d-flex align-items-center gap-2">
+          <span className="fs-4 fw-semibold text-primary">CloudDrive</span>
+        </div>
 
-export default Header
+        <div className="w-50 mx-4">
+          <div className="input-group">
+            <input
+              type="search"
+              className="form-control rounded-pill bg-light border-0 px-4 py-2"
+              placeholder="Search in Drive..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div className="d-flex align-items-center gap-3">
+          <div
+            className="rounded-circle bg-primary text-white d-flex align-items-center justify-content-center fw-bold"
+            style={{ width: '38px', height: '38px' }}
+          >
+            FL
+          </div>
+        </div>
+      </div>
+    </nav>
+  );
+};
+
+export default Header;

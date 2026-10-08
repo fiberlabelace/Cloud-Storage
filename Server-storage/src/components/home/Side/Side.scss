@@ -1,7 +1,20 @@
-.side{
-    width: 15%;
+.gdrive-sidebar {
+  width: 240px;
+  min-width: 240px;
+  background-color: #f8fafd;
+  height: calc(100vh - 65px);
 }
-button.folder{
-    width: 90%;
-    font-size: 16px;
+
+.gdrive-new-btn {
+  background-color: #fff;
+  transition: box-shadow 0.2s ease;
+  &:hover {
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1) !important;
+  }
+}
+
+.nav-link.active {
+  background-color: #c2e7ff !important;
+  color: #001d35 !important;
+  font-weight: 600;
 }
