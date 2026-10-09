@@ -1,9 +1,14 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import './Home.scss';
 import {
   P, COL, KL, NAV, kind, icon, sz, dt, zip,
-  getThumbnailUrl, psd, clip
+  psd, clip
 } from '../../utils/driveEngine';
+import {
+  copyServerFile, deleteServerFile, getRawFileUrl,
+  listServerFiles, readServerFile, renameServerFile, restoreServerFile,
+  trashServerFile, uploadServerFile
+} from '../../utils/storageApi';
 
 // Render Icon SVG
 export const SvgIcon = ({ name, color, className = '', style = {} }) => (
@@ -37,21 +42,31 @@ const Home = () => {
   const [toastMessage, setToastMessage] = useState(null);
   const [uploadBox, setUploadBox] = useState(null);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
-  const [draggedItemId, setDraggedItemId] = useState(null);
+  const [serverItems, setServerItems] = useState([]);
+  const [databaseReady, setDatabaseReady] = useState(false);
+  const [objectUrls, setObjectUrls] = useState({});
 
   const fileInputRef = useRef(null);
   const folderInputRef = useRef(null);
   const searchInputRef = useRef(null);
   const urlMap = useRef(new Map());
+  const databaseRef = useRef(null);
+
+  const allItems = [...items, ...serverItems];
 
   const getUrl = (i) => {
-    if (!urlMap.current.has(i.id)) {
-      urlMap.current.set(i.id, URL.createObjectURL(i.blob));
-    }
-    return urlMap.current.get(i.id);
+    if (i.remote) return getRawFileUrl(i.name);
+    return objectUrls[i.id] || '';
   };
 
-  const get = (id) => items.find((i) => i.id === id);
+  const addObjectUrls = (storedItems) => storedItems.map((item) => {
+    if (!item.remote && item.blob && !urlMap.current.has(item.id)) {
+      urlMap.current.set(item.id, URL.createObjectURL(item.blob));
+    }
+    return urlMap.current.has(item.id) ? { ...item, url: urlMap.current.get(item.id) } : item;
+  });
+
+  const get = (id) => allItems.find((i) => i.id === id);
   const inTrash = (i) => {
     while (i) {
       if (i.trashed) return true;
@@ -61,7 +76,7 @@ const Home = () => {
   };
   const descs = (id) => {
     let r = [];
-    items.filter((i) => i.parent === id).forEach((c) => r.push(c.id, ...descs(c.id)));
+    allItems.filter((i) => i.parent === id).forEach((c) => r.push(c.id, ...descs(c.id)));
     return r;
   };
 
@@ -70,46 +85,115 @@ const Home = () => {
     setTimeout(() => setToastMessage(null), 6000);
   };
 
-  // Khởi tạo IndexedDB đúng theo code gốc
   useEffect(() => {
-    const initDb = async () => {
-      try {
-        const req = indexedDB.open('drive', 1);
-        req.onupgradeneeded = () => req.result.createObjectStore('s');
-        req.onsuccess = () => {
-          const db = req.result;
-          const g = db.transaction('s').objectStore('s').get('items');
-          g.onsuccess = () => {
-            if (g.result && g.result.length > 0) {
-              setItems(g.result);
-            } else {
-              const f1 = { id: uid(), name: 'Documents', type: 'folder', parent: 'root', mod: Date.now() };
-              const f2 = { id: uid(), name: 'Photos', type: 'folder', parent: 'root', mod: Date.now() };
-              setItems([f1, f2]);
-            }
-          };
+    let cancelled = false;
+    let db;
+    let req;
+    try {
+      req = indexedDB.open('drive', 1);
+      req.onupgradeneeded = () => {
+        if (!req.result.objectStoreNames.contains('s')) req.result.createObjectStore('s');
+      };
+      req.onerror = () => {
+        console.error('IndexedDB open failed', req.error);
+        setToastMessage({ msg: `Local storage unavailable: ${req.error?.message || 'database could not be opened'}`, undoCb: null });
+      };
+      req.onsuccess = () => {
+        db = req.result;
+        if (cancelled) {
+          db.close();
+          return;
+        }
+        databaseRef.current = db;
+        const transaction = db.transaction('s');
+        const getItems = transaction.objectStore('s').get('items');
+        getItems.onerror = () => {
+          console.error('IndexedDB read failed', getItems.error);
+          setToastMessage({ msg: `Could not load local drive data: ${getItems.error?.message || 'database read failed'}`, undoCb: null });
         };
-      } catch (e) {
-        console.error('IndexedDB error', e);
-      }
+        getItems.onsuccess = () => {
+          if (cancelled) return;
+          const storedItems = getItems.result;
+          if (storedItems?.length) {
+            setItems(addObjectUrls(storedItems.filter((item) => !item.remote)));
+            setServerItems(storedItems.filter((item) => item.remote));
+          } else {
+            const f1 = { id: uid(), name: 'Documents', type: 'folder', parent: 'root', mod: Date.now() };
+            const f2 = { id: uid(), name: 'Photos', type: 'folder', parent: 'root', mod: Date.now() };
+            setItems([f1, f2]);
+          }
+          setDatabaseReady(true);
+        };
+      };
+    } catch (err) {
+      console.error('IndexedDB initialization failed', err);
+      queueMicrotask(() => setToastMessage({ msg: `Local storage unavailable: ${err.message}`, undoCb: null }));
+    }
+    return () => {
+      cancelled = true;
+      if (db) db.close();
     };
-    initDb();
   }, []);
 
-  // Tự động lưu items vào IndexedDB mỗi khi thay đổi
   useEffect(() => {
-    if (items.length === 0) return;
+    if (!databaseReady || !databaseRef.current) return;
     try {
-      const req = indexedDB.open('drive', 1);
-      req.onsuccess = () => {
-        req.result.transaction('s', 'readwrite').objectStore('s').put(items, 'items');
+      const transaction = databaseRef.current.transaction('s', 'readwrite');
+      const savedItems = [...items.filter((item) => !item.remote), ...serverItems].map((item) => {
+        const storedItem = { ...item };
+        delete storedItem.url;
+        return storedItem;
+      });
+      transaction.objectStore('s').put(savedItems, 'items');
+      transaction.onerror = () => {
+        console.error('IndexedDB write failed', transaction.error);
+        setToastMessage({ msg: `Could not save local drive data: ${transaction.error?.message || 'database write failed'}`, undoCb: null });
       };
-    } catch (e) {}
+    } catch (err) {
+      console.error('IndexedDB write failed', err);
+      queueMicrotask(() => setToastMessage({ msg: `Could not save local drive data: ${err.message}`, undoCb: null }));
+    }
+  }, [databaseReady, items, serverItems]);
+
+  useEffect(() => {
+    setObjectUrls(Object.fromEntries(urlMap.current));
+    const liveIds = new Set(items.filter((item) => item.blob && !item.remote).map((item) => item.id));
+    for (const [id, url] of urlMap.current) {
+      if (!liveIds.has(id)) {
+        URL.revokeObjectURL(url);
+        urlMap.current.delete(id);
+      }
+    }
   }, [items]);
+
+  useEffect(() => () => {
+    for (const url of urlMap.current.values()) URL.revokeObjectURL(url);
+    urlMap.current.clear();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    listServerFiles(S.v === 'trash')
+      .then((files) => {
+        if (!cancelled) {
+          setServerItems((previous) => files.map((file) => ({
+            ...file,
+            starred: previous.find((item) => item.id === file.id)?.starred || false
+          })));
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          console.error('Could not load server files', err);
+          setToastMessage({ msg: `Could not load server files: ${err.message}`, undoCb: null });
+        }
+      });
+    return () => { cancelled = true; };
+  }, [S.v]);
 
   // Bộ lọc hiển thị vis()
   const vis = () => {
-    let a = items.filter((i) => {
+    let a = allItems.filter((i) => {
       if (S.v === 'trash') return i.trashed;
       if (inTrash(i)) return false;
       if (S.q) return (i.name || '').toLowerCase().includes(S.q.toLowerCase());
@@ -131,66 +215,106 @@ const Home = () => {
   };
 
   const visibleItems = vis();
-  const selItems = items.filter((i) => S.sel.has(i.id));
+  const selItems = allItems.filter((i) => S.sel.has(i.id));
 
-  // Tải lên files / folder
-  const uploadFiles = (fileList) => {
-    const fs = [...fileList];
-    if (!fs.length) return;
+  const folderPath = (folderId) => {
+    const names = [];
+    let folder = get(folderId);
+    while (folder && folder.parent !== 'root') {
+      names.unshift(folder.name);
+      folder = get(folder.parent);
+    }
+    return names.join('/');
+  };
+
+  const refreshServerFiles = async (trash = false) => {
+    const files = await listServerFiles(trash);
+    setServerItems(files);
+  };
+
+  const uploadFiles = async (fileList) => {
+    const files = [...fileList];
+    if (!files.length) return;
     let targetParent = S.cwd;
     if (S.v !== 'drive' || S.q) {
       targetParent = 'root';
       setS((prev) => ({ ...prev, v: 'drive', q: '', cwd: 'root' }));
     }
 
-    const newCreatedItems = [];
-    fs.forEach((f) => {
-      let p = targetParent;
-      const relPath = (f.webkitRelativePath || '').split('/').slice(0, -1);
-      relPath.forEach((n) => {
-        let found = items.find((x) => x.type === 'folder' && x.parent === p && x.name === n && !x.trashed);
-        if (!found) {
-          found = { id: uid(), name: n, type: 'folder', parent: p, mod: Date.now() };
-          newCreatedItems.push(found);
-        }
-        p = found.id;
-      });
-      newCreatedItems.push({
-        id: uid(),
-        name: f.name,
-        type: 'file',
-        parent: p,
-        mime: f.type,
-        size: f.size,
-        blob: f,
-        mod: Date.now()
-      });
-    });
+    const prefix = folderPath(targetParent);
+    const failures = [];
+    setUploadBox({ files, done: false, progress: 0, currentName: files[0].name, failures: [] });
+    for (const file of files) {
+      const relativeName = file.webkitRelativePath || file.name;
+      const fileName = [prefix, relativeName].filter(Boolean).join('/');
+      setUploadBox((previous) => previous ? {
+        ...previous,
+        currentName: file.name,
+        progress: 0
+      } : previous);
 
-    setItems((prev) => [...prev, ...newCreatedItems]);
-    setUploadBox({ files: fs, done: false });
-    setTimeout(() => {
-      setUploadBox((prev) => (prev ? { ...prev, done: true } : null));
-    }, 900);
+      try {
+        await uploadServerFile(file, fileName, (progress) => {
+          setUploadBox((previous) => previous ? { ...previous, progress } : previous);
+        });
+      } catch (err) {
+        console.error(`Upload error for ${file.name}:`, err);
+        failures.push(`${file.name}: ${err.message}`);
+      }
+    }
+
+    try {
+      await refreshServerFiles(false);
+    } catch (err) {
+      console.error('Could not refresh server files after upload', err);
+      failures.push(`Could not refresh the file list: ${err.message}`);
+    }
+    const completedUpload = {
+      files,
+      done: true,
+      progress: 100,
+      currentName: files[files.length - 1].name,
+      failures
+    };
+    setUploadBox(completedUpload);
+    window.setTimeout(() => {
+      setUploadBox((current) => current === completedUpload ? null : current);
+    }, 6000);
+    if (failures.length) {
+      setToastMessage({
+        msg: `${failures.length} upload operation(s) failed: ${failures[0]}`,
+        undoCb: null
+      });
+    } else {
+      showToast(`${files.length} upload${files.length === 1 ? '' : 's'} complete`);
+    }
+
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    if (folderInputRef.current) folderInputRef.current.value = '';
   };
 
   // Download logic (Hỗ trợ nén zip trực tiếp)
   const downloadItems = async (list) => {
     const ents = [];
-    const add = (i, p) => {
-      if (i.type === 'file') ents.push({ path: p + i.name, blob: i.blob });
-      else items.filter((c) => c.parent === i.id && !c.trashed).forEach((c) => add(c, p + i.name + '/'));
-    };
-    list.forEach((i) => add(i, ''));
-    if (!ents.length) return showToast('Nothing to download');
-
-    const one = list.length === 1 && list[0].type === 'file';
-    let name = list[0].name, data;
-    try {
-      if (one) {
-        data = list[0].blob;
+    const add = async (i, p) => {
+      if (i.type === 'file') {
+        ents.push({ path: p + i.name, blob: i.remote ? await readServerFile(i.name) : i.blob });
       } else {
-        name = (list.length === 1 ? list[0].name : 'Drive download') + '.zip';
+        const children = allItems.filter((c) => c.parent === i.id && !c.trashed);
+        for (const child of children) await add(child, p + i.name + '/');
+      }
+    };
+    try {
+      for (const item of list) await add(item, '');
+      if (!ents.length) return showToast('Nothing to download');
+
+      const one = list.length === 1 && list[0].type === 'file';
+      let name = list[0].name, data;
+      if (one) {
+        data = ents[0].blob;
+        name = list[0].name.split('/').pop();
+      } else {
+        name = (list.length === 1 ? list[0].name.split('/').pop() : 'Drive download') + '.zip';
         data = await zip(ents);
       }
       const a = document.createElement('a');
@@ -231,10 +355,11 @@ const Home = () => {
         </div>
       );
       try {
-        const previewBlob = k === 'psd' ? await psd(item.blob, true) : await clip(item.blob);
+        const blob = item.remote ? await readServerFile(item.name) : item.blob;
+        const previewBlob = k === 'psd' ? await psd(blob, true) : await clip(blob);
         const previewUrl = URL.createObjectURL(previewBlob);
         setPreviewContent(<img src={previewUrl} alt="Preview" />);
-      } catch (e) {
+      } catch {
         setPreviewContent(
           <div className="np">
             <SvgIcon name="file" color="#9aa0a6" className="bg" />
@@ -244,8 +369,12 @@ const Home = () => {
         );
       }
     } else if (k === 'text' && item.size < 2e6) {
-      const text = await item.blob.text();
-      setPreviewContent(<pre>{text}</pre>);
+      try {
+        const blob = item.remote ? await readServerFile(item.name) : item.blob;
+        setPreviewContent(<pre>{await blob.text()}</pre>);
+      } catch (err) {
+        setPreviewContent(<div className="np"><p>Could not load preview: {err.message}</p></div>);
+      }
     } else {
       setPreviewContent(
         <div className="np">
@@ -258,32 +387,141 @@ const Home = () => {
   };
 
   // Thao tác Xóa, Đổi tên, Di chuyển
-  const moveToTrash = () => {
+  const moveToTrash = async () => {
     const list = selItems;
-    setItems((prev) => prev.map((i) => (S.sel.has(i.id) ? { ...i, trashed: true } : i)));
+    const remoteItems = list.filter((item) => item.remote);
+    const localIds = new Set(list.filter((item) => !item.remote).map((item) => item.id));
+    const failures = [];
+    for (const item of remoteItems) {
+      try {
+        await trashServerFile(item.name);
+      } catch (err) {
+        failures.push(`${item.name}: ${err.message}`);
+      }
+    }
+    setItems((prev) => prev.map((i) => (localIds.has(i.id) ? { ...i, trashed: true } : i)));
+    setServerItems((prev) => prev.map((item) =>
+      remoteItems.some((moved) => moved.id === item.id && !failures.some((failure) => failure.startsWith(`${moved.name}:`)))
+        ? { ...item, trashed: true }
+        : item
+    ));
     setS((prev) => ({ ...prev, sel: new Set() }));
-    showToast(`${list.length} ${list.length > 1 ? 'items' : 'item'} moved to trash`, () => {
-      setItems((prev) => prev.map((i) => (list.some((x) => x.id === i.id) ? { ...i, trashed: false } : i)));
+    showToast(failures.length ? `Could not move ${failures[0]} to trash` : `${list.length} ${list.length > 1 ? 'items' : 'item'} moved to trash`, async () => {
+      for (const item of remoteItems) {
+        if (failures.some((failure) => failure.startsWith(`${item.name}:`))) continue;
+        try {
+          await restoreServerFile(item.name);
+        } catch (err) {
+          console.error(`Could not restore ${item.name}:`, err);
+          setToastMessage({ msg: `Could not restore ${item.name}: ${err.message}`, undoCb: null });
+        }
+      }
+      setItems((prev) => prev.map((i) => (localIds.has(i.id) ? { ...i, trashed: false } : i)));
+      setServerItems((prev) => prev.map((item) =>
+        remoteItems.some((restored) => restored.id === item.id) ? { ...item, trashed: false } : item
+      ));
+      if (failures.length === 0) showToast('Items restored');
     });
   };
 
-  const deleteForever = (list) => {
-    const ids = new Set(list.flatMap((i) => [i.id, ...descs(i.id)]));
-    setItems((prev) => prev.filter((i) => !ids.has(i.id)));
+  const restoreItems = async (list) => {
+    const remoteItems = list.filter((item) => item.remote);
+    const localIds = new Set(list.filter((item) => !item.remote).map((item) => item.id));
+    const failures = [];
+    for (const item of remoteItems) {
+      try {
+        await restoreServerFile(item.name);
+      } catch (err) {
+        failures.push(`${item.name}: ${err.message}`);
+      }
+    }
+    setItems((prev) => prev.map((item) => localIds.has(item.id) ? { ...item, trashed: false, parent: 'root' } : item));
+    setServerItems((prev) => prev.map((item) =>
+      remoteItems.some((restored) => restored.id === item.id && !failures.some((failure) => failure.startsWith(`${restored.name}:`)))
+        ? { ...item, trashed: false }
+        : item
+    ));
     setS((prev) => ({ ...prev, sel: new Set() }));
+    if (failures.length) showToast(`Could not restore ${failures[0]}`);
+  };
+
+  const deleteForever = async (list) => {
+    const ids = new Set(list.flatMap((i) => [i.id, ...descs(i.id)]));
+    const failures = [];
+    for (const item of list.filter((entry) => entry.remote)) {
+      try {
+        await deleteServerFile(item.name, S.v === 'trash');
+      } catch (err) {
+        failures.push(`${item.name}: ${err.message}`);
+      }
+    }
+    setItems((prev) => prev.filter((i) => !ids.has(i.id)));
+    const removedIds = new Set(list.filter((item) => item.remote && !failures.some((failure) => failure.startsWith(`${item.name}:`))).map((item) => item.id));
+    setServerItems((prev) => prev.filter((item) => !removedIds.has(item.id)));
+    setS((prev) => ({ ...prev, sel: new Set() }));
+    if (failures.length) showToast(`Could not delete ${failures[0]}`);
   };
 
   const renameItem = (i) => {
+    const currentName = i.remote ? i.name.split('/').pop() : i.name;
     setDialogState({
       title: 'Rename',
-      defaultValue: i.name,
+      defaultValue: currentName,
       okText: 'OK',
-      onOk: (val) => {
-        if (val.trim()) {
+      onOk: async (val) => {
+        if (val.trim() && val.trim() !== currentName) {
+          if (i.remote) {
+            const pathParts = i.name.split('/');
+            pathParts[pathParts.length - 1] = val.trim();
+            try {
+              await renameServerFile(i.name, pathParts.join('/'));
+              await refreshServerFiles(S.v === 'trash');
+            } catch (err) {
+              showToast(`Could not rename file: ${err.message}`);
+            }
+            return;
+          }
           setItems((prev) => prev.map((it) => (it.id === i.id ? { ...it, name: val.trim(), mod: Date.now() } : it)));
         }
       }
     });
+  };
+
+  const copyItems = async (list) => {
+    const remoteFiles = list.filter((item) => item.remote && item.type === 'file');
+    const localCopies = list.filter((item) => !item.remote && item.type === 'file').map((item) => ({
+      ...item, id: uid(), name: 'Copy of ' + item.name, mod: Date.now()
+    }));
+    setItems((prev) => [...prev, ...localCopies]);
+    const failures = [];
+    for (const item of remoteFiles) {
+      const basePath = item.name.split('/');
+      basePath[basePath.length - 1] = `Copy of ${basePath[basePath.length - 1]}`;
+      try {
+        await copyServerFile(item.name, basePath.join('/'));
+      } catch (err) {
+        failures.push(`${item.name}: ${err.message}`);
+      }
+    }
+    if (remoteFiles.length) {
+      try {
+        await refreshServerFiles(S.v === 'trash');
+      } catch (err) {
+        failures.push(`Could not refresh the file list: ${err.message}`);
+      }
+    }
+    if (failures.length) showToast(`Could not copy ${failures[0]}`);
+  };
+
+  const toggleStarred = (list) => {
+    const allStarred = list.every((item) => item.starred);
+    const selectedIds = new Set(list.map((item) => item.id));
+    setItems((prev) => prev.map((item) =>
+      selectedIds.has(item.id) ? { ...item, starred: !allStarred } : item
+    ));
+    setServerItems((prev) => prev.map((item) =>
+      selectedIds.has(item.id) ? { ...item, starred: !allStarred } : item
+    ));
   };
 
   const createFolder = () => {
@@ -315,10 +553,7 @@ const Home = () => {
       setMenuState({
         x, y,
         list: [
-          ['rest', 'Restore', () => {
-            setItems((prev) => prev.map((i) => (S.sel.has(i.id) ? { ...i, trashed: false, parent: 'root' } : i)));
-            setS((prev) => ({ ...prev, sel: new Set() }));
-          }],
+          ['rest', 'Restore', () => restoreItems(currentSel)],
           ['del', 'Delete forever', () => deleteForever(currentSel)]
         ]
       });
@@ -333,15 +568,9 @@ const Home = () => {
           ['dl', 'Download', () => downloadItems(currentSel)],
           '-',
           ...(one ? [['edit', 'Rename', () => renameItem(one)]] : []),
-          ['copy', 'Make a copy', () => {
-            const copies = currentSel.filter((i) => i.type === 'file').map((i) => ({
-              ...i, id: uid(), name: 'Copy of ' + i.name, mod: Date.now()
-            }));
-            setItems((prev) => [...prev, ...copies]);
-          }],
+          ['copy', 'Make a copy', () => copyItems(currentSel)],
           ['starb', currentSel.every((i) => i.starred) ? 'Remove from starred' : 'Add to starred', () => {
-            const allStarred = currentSel.every((i) => i.starred);
-            setItems((prev) => prev.map((i) => (S.sel.has(i.id) ? { ...i, starred: !allStarred } : i)));
+            toggleStarred(currentSel);
           }],
           '-',
           ['del', 'Move to trash', moveToTrash]
@@ -360,7 +589,7 @@ const Home = () => {
     }
   };
 
-  const usedBytes = items.reduce((s, i) => s + (i.size || 0), 0);
+  const usedBytes = allItems.reduce((s, i) => s + (i.size || 0), 0);
   const usedPercent = Math.max(1, Math.min(100, (usedBytes / 16106127360) * 100));
 
   return (
@@ -464,8 +693,7 @@ const Home = () => {
                 {S.v === 'trash' ? (
                   <>
                     <button className="ib" title="Restore" onClick={() => {
-                      setItems((prev) => prev.map((i) => (S.sel.has(i.id) ? { ...i, trashed: false, parent: 'root' } : i)));
-                      setS((prev) => ({ ...prev, sel: new Set() }));
+                      restoreItems(selItems);
                     }}><SvgIcon name="rest" /></button>
                     <button className="ib" title="Delete forever" onClick={() => deleteForever(selItems)}><SvgIcon name="del" /></button>
                   </>
@@ -476,8 +704,7 @@ const Home = () => {
                       <button className="ib" title="Rename" onClick={() => renameItem(selItems[0])}><SvgIcon name="edit" /></button>
                     )}
                     <button className="ib" title="Add to starred" onClick={() => {
-                      const allSt = selItems.every((i) => i.starred);
-                      setItems((prev) => prev.map((i) => (S.sel.has(i.id) ? { ...i, starred: !allSt } : i)));
+                      toggleStarred(selItems);
                     }}><SvgIcon name="starb" /></button>
                     <button className="ib" title="Move to trash" onClick={moveToTrash}><SvgIcon name="del" /></button>
                   </>
@@ -631,16 +858,29 @@ const Home = () => {
       {uploadBox && (
         <div id="up">
           <div className="uh">
-            <span>{uploadBox.done ? `${uploadBox.files.length} uploads complete` : `Uploading ${uploadBox.files.length} item(s)`}</span>
+            <span>
+              {uploadBox.done
+                ? uploadBox.failures.length
+                  ? `${uploadBox.failures.length} upload(s) failed`
+                  : `${uploadBox.files.length} upload(s) complete`
+                : `Uploading ${uploadBox.currentName} (${uploadBox.progress}%)`}
+            </span>
             <button className="ib" onClick={() => setUploadBox(null)}><SvgIcon name="x" /></button>
           </div>
           {uploadBox.files.slice(0, 6).map((f, idx) => (
             <div className="ur" key={idx}>
               <SvgIcon name="file" color="#5f6368" />
               <span>{f.name}</span>
-              {uploadBox.done ? <SvgIcon name="ok" color="#188038" /> : <b className="sp"></b>}
+              {uploadBox.failures.some((failure) => failure.startsWith(`${f.name}:`))
+                ? <span className="upload-failed">Failed</span>
+                : uploadBox.done
+                  ? <SvgIcon name="ok" color="#188038" />
+                  : uploadBox.currentName === f.name
+                    ? <span>{uploadBox.progress}%</span>
+                    : <b className="sp"></b>}
             </div>
           ))}
+          {uploadBox.files.length > 6 && <div className="ur">+{uploadBox.files.length - 6} more file(s)</div>}
         </div>
       )}
 
