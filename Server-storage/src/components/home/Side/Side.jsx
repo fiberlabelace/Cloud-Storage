@@ -1,86 +1,11 @@
-import React, { useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import './Side.scss';
-
-const CHUNK_SIZE = 2 * 1024 * 1024; // 2 MB per chunk
-const API_BASE = 'https://fiber-label.tailfc4e35.ts.net/api';
+import { uploadServerFile } from '../../../utils/storageApi';
 
 const Side = ({ fetchFiles }) => {
   const fileInputRef = useRef(null);
   const [uploadProgress, setUploadProgress] = useState(null); // null or percentage (0 - 100)
   const [uploadingFileName, setUploadingFileName] = useState('');
-
-  const uploadFileInChunks = async (file) => {
-    // 1. Initialize upload session
-    const initRes = await fetch(`${API_BASE}/upload/init`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        fileName: file.name,
-        totalSize: file.size,
-        mimeType: file.type || 'application/octet-stream',
-      }),
-    });
-
-    if (!initRes.ok) throw new Error('Failed to initialize upload session');
-    const { uploadId } = await initRes.json();
-
-    let startByte = 0;
-
-    // 2. Loop through slices
-    while (startByte < file.size) {
-      const endByte = Math.min(startByte + CHUNK_SIZE, file.size);
-      const chunk = file.slice(startByte, endByte);
-
-      let success = false;
-      let retries = 0;
-
-      while (!success && retries < 5) {
-        try {
-          const chunkRes = await fetch(`${API_BASE}/upload/chunk?uploadId=${uploadId}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/octet-stream' },
-            body: chunk,
-          });
-
-          if (!chunkRes.ok) throw new Error('Chunk upload failed');
-
-          const data = await chunkRes.json();
-          startByte = endByte;
-          setUploadProgress(data.progress);
-          success = true;
-        } catch (err) {
-          retries += 1;
-          console.warn(`Chunk retry ${retries}/5:`, err);
-          await new Promise((resolve) => setTimeout(resolve, 1500));
-
-          // Inquire where server stopped to resume smoothly
-          try {
-            const statusRes = await fetch(`${API_BASE}/upload/status?uploadId=${uploadId}`);
-            if (statusRes.ok) {
-              const statusData = await statusRes.json();
-              startByte = statusData.receivedBytes;
-            }
-          } catch (statusErr) {
-            console.error('Failed to get status check:', statusErr);
-          }
-        }
-      }
-
-      if (!success) {
-        throw new Error('Upload aborted after multiple network retry failures');
-      }
-    }
-
-    // 3. Finalize upload
-    const completeRes = await fetch(`${API_BASE}/upload/complete`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ uploadId }),
-    });
-
-    if (!completeRes.ok) throw new Error('Failed to finalize file upload');
-    return await completeRes.json();
-  };
 
   const handleFileChange = async (e) => {
     const files = e.target.files;
@@ -91,10 +16,10 @@ const Side = ({ fetchFiles }) => {
       setUploadProgress(0);
 
       try {
-        await uploadFileInChunks(file);
+        await uploadServerFile(file, file.name, setUploadProgress);
       } catch (err) {
         console.error(`Upload error for ${file.name}:`, err);
-        alert(`Failed to upload ${file.name}`);
+        alert(`Failed to upload ${file.name}: ${err.message}`);
       }
     }
 

@@ -1,16 +1,29 @@
-# React + Vite
+# Cloud Storage
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+The Drive interface stores uploaded files on the backend. In development, the frontend expects the API at `http://localhost:3000/api`.
 
-Currently, two official plugins are available:
+## Run locally
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+1. Start the API:
 
-## React Compiler
+   ```powershell
+   cd Server-backend
+   npm install
+   npm start
+   ```
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+2. In another terminal, start the frontend:
 
-## Expanding the ESLint configuration
+   ```powershell
+   cd Server-storage
+   npm install
+   npm run dev
+   ```
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+Set `VITE_API_BASE_URL` to the backend API URL when deploying to a different host. The production default is the configured storage API host.
+
+Uploaded files are written to `Server-backend/uploads`; configure persistent disk storage for deployments. The API uses resumable 2 MB chunks, lists and previews server files, and supports download, trash, restore, rename, copy, and permanent deletion.
+
+## Checks
+
+Run the API integration tests with `cd Server-backend; npm test` and check the frontend with `cd Server-storage; npm run lint` and `npm run build`.

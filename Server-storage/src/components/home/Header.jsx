@@ -1,5 +1,3 @@
-import React from 'react';
-
 const Header = ({ searchQuery, setSearchQuery }) => {
   return (
     <nav className="navbar navbar-expand bg-transparent px-4 py-2 border-bottom">

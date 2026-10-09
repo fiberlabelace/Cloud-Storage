@@ -56,10 +56,10 @@ export const kind = (i) => {
   const m = i.mime || '', n = (i.name || '').toLowerCase();
   if (/\.psd$/.test(n)) return 'psd';
   if (/\.(clip|csp)$/.test(n)) return 'clip';
-  if (m.startsWith('image/')) return 'image';
-  if (m.startsWith('video/')) return 'video';
-  if (m.startsWith('audio/')) return 'audio';
-  if (m === 'application/pdf') return 'pdf';
+  if (m.startsWith('image/') || /\.(avif|bmp|gif|jpe?g|png|svg|webp)$/.test(n)) return 'image';
+  if (m.startsWith('video/') || /\.(avi|m4v|mkv|mov|mp4|mpeg|webm)$/.test(n)) return 'video';
+  if (m.startsWith('audio/') || /\.(aac|flac|m4a|mp3|ogg|opus|wav)$/.test(n)) return 'audio';
+  if (m === 'application/pdf' || /\.pdf$/.test(n)) return 'pdf';
   if (/\.(docx?|odt|pptx?)$/.test(n)) return 'doc';
   if (/\.(xlsx?|csv)$/.test(n)) return 'sheet';
   if (/\.(zip|rar|7z|tar|gz)$/.test(n)) return 'zip';

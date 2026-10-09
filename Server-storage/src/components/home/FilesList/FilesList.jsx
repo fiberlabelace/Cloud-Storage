@@ -1,5 +1,5 @@
-import React from 'react';
 import FileCard from './FileCard';
+import { deleteServerFile, getDownloadUrl } from '../../../utils/storageApi';
 
 const formatBytes = (bytes) => {
   if (bytes === 0) return '0 B';
@@ -11,14 +11,20 @@ const formatBytes = (bytes) => {
 
 const FilesList = ({ files, viewMode, fetchFiles, onPreview }) => {
   const handleDelete = (filename) => {
-    fetch(`https://fiber-label.tailfc4e35.ts.net/api/files/${encodeURIComponent(filename)}`, { method: 'DELETE' })
-      .then((res) => res.json())
+    deleteServerFile(filename)
       .then(() => fetchFiles())
-      .catch((err) => console.error(err));
+      .catch((err) => {
+        console.error('Failed to delete file', err);
+        alert(`Failed to delete ${filename}: ${err.message}`);
+      });
   };
 
   const handleDownload = (filename) => {
-    window.location.href = `https://fiber-label.tailfc4e35.ts.net/api/files/download/${encodeURIComponent(filename)}`;
+    const link = document.createElement('a');
+    link.href = getDownloadUrl(filename);
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.click();
   };
 
   if (files.length === 0) {

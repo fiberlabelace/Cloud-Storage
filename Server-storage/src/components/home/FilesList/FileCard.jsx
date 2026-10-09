@@ -1,5 +1,3 @@
-import React from 'react';
-
 const formatBytes = (bytes) => {
   if (bytes === 0) return '0 B';
   const k = 1024;

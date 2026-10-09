@@ -1,10 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
+import { getDownloadUrl, getRawFileUrl } from '../../../utils/storageApi';
 
 const FilePreviewModal = ({ file, onClose }) => {
-  const [textContent, setTextContent] = useState('');
-  const [loadingText, setLoadingText] = useState(false);
+  const [textResult, setTextResult] = useState({ status: 'idle', content: '' });
 
-  const fileUrl = `https://fiber-label.tailfc4e35.ts.net/api/files/raw/${encodeURIComponent(file.name)}`;
+  const fileUrl = getRawFileUrl(file.name);
   const ext = file.name.split('.').pop().toLowerCase();
 
   const isImage = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg'].includes(ext);
@@ -15,14 +15,20 @@ const FilePreviewModal = ({ file, onClose }) => {
 
   useEffect(() => {
     if (isText) {
-      setLoadingText(true);
+      let cancelled = false;
       fetch(fileUrl)
-        .then((res) => res.text())
-        .then((txt) => {
-          setTextContent(txt);
-          setLoadingText(false);
+        .then((res) => {
+          if (!res.ok) throw new Error(`Preview request failed (${res.status})`);
+          return res.text();
         })
-        .catch(() => setLoadingText(false));
+        .then((content) => {
+          if (!cancelled) setTextResult({ status: 'loaded', content });
+        })
+        .catch((err) => {
+          console.error('Failed to load text preview', err);
+          if (!cancelled) setTextResult({ status: 'error', content: err.message });
+        });
+      return () => { cancelled = true; };
     }
   }, [fileUrl, isText]);
 
@@ -84,7 +90,11 @@ const FilePreviewModal = ({ file, onClose }) => {
                 className="w-100 p-3 m-0 bg-white"
                 style={{ maxHeight: '70vh', overflow: 'auto', fontSize: '0.85rem' }}
               >
-                {loadingText ? 'Loading text...' : textContent}
+                {textResult.status === 'idle'
+                  ? 'Loading text...'
+                  : textResult.status === 'error'
+                    ? `Could not load preview: ${textResult.content}`
+                    : textResult.content}
               </pre>
             )}
 
@@ -93,7 +103,7 @@ const FilePreviewModal = ({ file, onClose }) => {
                 <div className="fs-1 mb-3">📄</div>
                 <p className="text-muted">Preview not available for this file type.</p>
                 <a
-                  href={`https://fiber-label.tailfc4e35.ts.net/api/files/download/${encodeURIComponent(file.name)}`}
+                  href={getDownloadUrl(file.name)}
                   className="btn btn-primary"
                 >
                   Download to view
