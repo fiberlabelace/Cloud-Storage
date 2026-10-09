@@ -18,7 +18,7 @@ const Header = ({ searchQuery, setSearchQuery }) => {
               onChange={(e) => setSearchQuery(e.target.value)}
             />
           </div>
-        </div>
+        </div>  
 
         <div className="d-flex align-items-center gap-3">
           <div

@@ -1,88 +1,144 @@
 const express = require('express');
 const cors = require('cors');
-const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const app = express();
-app.use(cors());
+const PORT = 3000;
+
+// CORS Configuration
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Range'],
+  exposedHeaders: ['Content-Range', 'Accept-Ranges', 'Content-Length']
+}));
+
+const STORAGE_DIR = path.join(__dirname, 'uploads');
+const TEMP_DIR = path.join(__dirname, 'temp_chunks');
+
+if (!fs.existsSync(STORAGE_DIR)) fs.mkdirSync(STORAGE_DIR, { recursive: true });
+if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
+
+const activeUploads = new Map();
+
 app.use(express.json());
-
-// Points directly to server-files so Samba and API share the same files
-const STORAGE_DIR = path.join(__dirname, '../server-files');
-if (!fs.existsSync(STORAGE_DIR)) {
-  fs.mkdirSync(STORAGE_DIR, { recursive: true });
-}
-
-// Serve files directly for previewing (images, PDFs, text, etc.)
-app.use('/api/files/raw', express.static(STORAGE_DIR));
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, STORAGE_DIR),
-  filename: (req, file, cb) => cb(null, file.originalname)
-});
-const upload = multer({ storage });
+app.use(express.urlencoded({ extended: true }));
 
 app.get('/', (req, res) => res.send('Server is working!'));
 
-// 1. GET ALL FILES
-app.get('/api/files', async (req, res) => {
-  try {
-    const fileNames = await fs.promises.readdir(STORAGE_DIR);
-    const files = await Promise.all(
-      fileNames.map(async (name) => {
-        const filePath = path.join(STORAGE_DIR, name);
-        const stats = await fs.promises.stat(filePath);
-        return {
-          name,
-          size: stats.size,
-          modifiedAt: stats.mtime,
-          isFile: stats.isFile()
-        };
-      })
-    );
-    res.json({ files: files.filter((f) => f.isFile) });
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to retrieve file list' });
-  }
+// File listing
+app.get('/api/files', (req, res) => {
+  fs.readdir(STORAGE_DIR, { withFileTypes: true }, (err, entries) => {
+    if (err) return res.status(500).json({ error: 'Failed to read files' });
+    try {
+      const files = entries
+        .filter((entry) => entry.isFile())
+        .map((entry) => {
+          const stats = fs.statSync(path.join(STORAGE_DIR, entry.name));
+          return {
+            name: entry.name,
+            size: stats.size,
+            modifiedAt: stats.mtime,
+            isFile: true
+          };
+        });
+      res.json({ files });
+    } catch (parseErr) {
+      res.status(500).json({ error: 'Failed to parse file list' });
+    }
+  });
 });
 
-// 2. UPLOAD FILES
-app.post('/api/files', upload.array('myFile'), (req, res) => {
-  res.json({ success: true, count: req.files ? req.files.length : 0 });
+// Download
+app.get('/api/files/download/:filename', (req, res) => {
+  const filePath = path.join(STORAGE_DIR, req.params.filename);
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found' });
+  res.download(filePath);
 });
 
-// 3. DOWNLOAD FILE
+// Raw preview
 app.get('/api/files/raw/:filename', (req, res) => {
   const filePath = path.join(STORAGE_DIR, req.params.filename);
-
-  if (!fs.existsSync(filePath)) {
-    return res.status(404).json({ error: 'File not found' });
-  }
-
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found' });
   res.sendFile(filePath);
 });
-// 4. DELETE FILE
-app.delete('/api/files/:filename', async (req, res) => {
-  try {
-    const filePath = path.join(STORAGE_DIR, req.params.filename);
-    await fs.promises.unlink(filePath);
-    res.json({ success: true, filename: req.params.filename });
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to delete file' });
-  }
-});
-// Add this route right above app.listen(...)
-app.get('/api/files/raw/:filename', (req, res) => {
+
+// Delete
+app.delete('/api/files/:filename', (req, res) => {
   const filePath = path.join(STORAGE_DIR, req.params.filename);
-  
-  if (!fs.existsSync(filePath)) {
-    return res.status(404).json({ error: 'File not found' });
-  }
-
-  // sendFile automatically sets the correct Content-Type (image/png, application/pdf, etc.)
-  res.sendFile(filePath);
+  fs.unlink(filePath, (err) => {
+    if (err) return res.status(500).json({ error: 'Failed to delete file' });
+    res.json({ message: 'File deleted' });
+  });
 });
-app.listen(3000, () => {
-  console.log('Server is running on port 3000');
+
+// Resumable upload initialization
+app.post('/api/upload/init', (req, res) => {
+  const { fileName, totalSize, mimeType } = req.body;
+  const uploadId = crypto.randomUUID();
+  const tempFilePath = path.join(TEMP_DIR, `${uploadId}.part`);
+
+  fs.writeFileSync(tempFilePath, Buffer.alloc(0));
+
+  activeUploads.set(uploadId, {
+    fileName,
+    totalSize,
+    mimeType,
+    tempFilePath,
+    receivedBytes: 0
+  });
+
+  res.json({ uploadId });
+});
+
+// Append chunk
+app.put('/api/upload/chunk', express.raw({ type: 'application/octet-stream', limit: '20mb' }), (req, res) => {
+  const uploadId = req.query.uploadId;
+  const upload = activeUploads.get(uploadId);
+
+  if (!upload) return res.status(404).json({ error: 'Upload session not found' });
+
+  fs.appendFile(upload.tempFilePath, req.body, (err) => {
+    if (err) return res.status(500).json({ error: 'Failed to write chunk' });
+
+    upload.receivedBytes += req.body.length;
+
+    res.json({
+      receivedBytes: upload.receivedBytes,
+      totalSize: upload.totalSize,
+      progress: Math.round((upload.receivedBytes / upload.totalSize) * 100)
+    });
+  });
+});
+
+// Status check
+app.get('/api/upload/status', (req, res) => {
+  const uploadId = req.query.uploadId;
+  const upload = activeUploads.get(uploadId);
+  if (!upload) return res.status(404).json({ error: 'Session not found' });
+
+  res.json({
+    receivedBytes: upload.receivedBytes,
+    totalSize: upload.totalSize
+  });
+});
+
+// Finalize upload
+app.post('/api/upload/complete', (req, res) => {
+  const { uploadId } = req.body;
+  const upload = activeUploads.get(uploadId);
+  if (!upload) return res.status(404).json({ error: 'Session not found' });
+
+  const finalPath = path.join(STORAGE_DIR, upload.fileName);
+  fs.rename(upload.tempFilePath, finalPath, (err) => {
+    if (err) return res.status(500).json({ error: 'Failed to finalize file' });
+    activeUploads.delete(uploadId);
+    res.json({ message: 'Upload complete', fileName: upload.fileName });
+  });
+});
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server listening on port ${PORT}`);
 });
