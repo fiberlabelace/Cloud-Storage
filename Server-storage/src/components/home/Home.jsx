@@ -582,7 +582,10 @@ const Home = () => {
         list: [
           ['nf', 'New folder', createFolder],
           '-',
-          ['up', 'File upload', () => fileInputRef.current.click()],
+          ['up', 'File upload', () => {
+            console.log('Upload clicked:', fileInputRef.current);
+            fileInputRef.current?.click();
+          }],
           ['folder', 'Folder upload', () => folderInputRef.current.click()]
         ]
       });
@@ -645,6 +648,7 @@ const Home = () => {
           <button
             className="new"
             onClick={(e) => {
+              e.stopPropagation();
               const r = e.currentTarget.getBoundingClientRect();
               setMenuState({
                 x: r.left,
@@ -652,7 +656,10 @@ const Home = () => {
                 list: [
                   ['nf', 'New folder', createFolder],
                   '-',
-                  ['up', 'File upload', () => fileInputRef.current.click()],
+                  ['up', 'File upload', () => {
+            console.log('Upload clicked:', fileInputRef.current);
+            fileInputRef.current?.click();
+          }],
                   ['folder', 'Folder upload', () => folderInputRef.current.click()]
                 ]
               });

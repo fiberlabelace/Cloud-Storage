@@ -1,7 +1,5 @@
 const configuredApiBase = import.meta.env.VITE_API_BASE_URL;
-const defaultApiBase = import.meta.env.DEV
-  ? 'http://localhost:3000/api'
-  : 'https://fiber-label.tailfc4e35.ts.net/api';
+const defaultApiBase = 'http://100.83.204.64:3000/api';
 
 export const API_BASE = (configuredApiBase || defaultApiBase).replace(/\/+$/, '');
 
