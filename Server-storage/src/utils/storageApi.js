@@ -1,7 +1,8 @@
 const configuredApiBase = import.meta.env.VITE_API_BASE_URL;
-const defaultApiBase = 'http://100.83.204.64:3000/api';
-
-export const API_BASE = (configuredApiBase || defaultApiBase).replace(/\/+$/, '');
+// Use the same origin by default. Vite proxies /api to the local backend in
+// development; production should route /api through its web server or set
+// VITE_API_BASE_URL to an externally reachable API URL.
+export const API_BASE = (configuredApiBase || '/api').replace(/\/+$/, '');
 
 const parseResponse = async (response) => {
   let body;

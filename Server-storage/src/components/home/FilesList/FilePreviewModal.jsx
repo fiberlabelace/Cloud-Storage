@@ -1,120 +1,95 @@
-import { useState, useEffect } from 'react';
-import { getDownloadUrl, getRawFileUrl } from '../../../utils/storageApi';
+import { useEffect, useMemo, useState } from 'react';
+import { SvgIcon } from '../Home';
+import PsdLayerViewer from './PsdLayerViewer';
+import { kind as getKind, icon as kindIcon, COL, psd, clip } from '../../../utils/driveEngine';
+import { getRawFileUrl, readServerFile } from '../../../utils/storageApi';
 
-const FilePreviewModal = ({ file, onClose }) => {
-  const [textResult, setTextResult] = useState({ status: 'idle', content: '' });
+export default function FilePreviewModal({ item, onClose, onDownload, onTrash }) {
+  const k = getKind(item);
 
-  const fileUrl = getRawFileUrl(file.name);
-  const ext = file.name.split('.').pop().toLowerCase();
-
-  const isImage = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg'].includes(ext);
-  const isPdf = ext === 'pdf';
-  const isVideo = ['mp4', 'webm', 'ogg'].includes(ext);
-  const isAudio = ['mp3', 'wav'].includes(ext);
-  const isText = ['txt', 'json', 'js', 'jsx', 'html', 'css', 'scss', 'md', 'log'].includes(ext);
+  const blobUrl = useMemo(() => {
+    if (item.blob) return URL.createObjectURL(item.blob);
+    return null;
+  }, [item.blob]);
 
   useEffect(() => {
-    if (isText) {
-      let cancelled = false;
-      fetch(fileUrl)
-        .then((res) => {
-          if (!res.ok) throw new Error(`Preview request failed (${res.status})`);
-          return res.text();
-        })
-        .then((content) => {
-          if (!cancelled) setTextResult({ status: 'loaded', content });
-        })
-        .catch((err) => {
-          console.error('Failed to load text preview', err);
-          if (!cancelled) setTextResult({ status: 'error', content: err.message });
-        });
-      return () => { cancelled = true; };
-    }
-  }, [fileUrl, isText]);
+    return () => {
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
+    };
+  }, [blobUrl]);
 
-  return (
-    <div
-      className="modal show d-block"
-      tabIndex="-1"
-      style={{ backgroundColor: 'rgba(0,0,0,0.7)' }}
-      onClick={onClose}
-    >
-      <div
-        className="modal-dialog modal-dialog-centered modal-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="modal-content border-0 shadow-lg">
-          <div className="modal-header">
-            <h6 className="modal-title fw-bold text-truncate">{file.name}</h6>
-            <button type="button" className="btn-close" onClick={onClose} />
-          </div>
-          <div
-            className="modal-body d-flex justify-content-center align-items-center bg-light p-0 overflow-auto"
-            style={{ maxHeight: '75vh', minHeight: '300px' }}
-          >
-            {isImage && (
-              <img
-                src={fileUrl}
-                alt={file.name}
-                className="img-fluid rounded"
-                style={{ maxHeight: '70vh', objectFit: 'contain' }}
-              />
-            )}
+  const url = item.remote ? getRawFileUrl(item.name) : (item.url || blobUrl || '');
+  const isLayered = k === 'psd' || k === 'clip';
+  const [state, setState] = useState({ loading: (!isLayered && k === 'text'), src: null, text: null });
 
-            {isPdf && (
-              <iframe
-                src={fileUrl}
-                title={file.name}
-                className="w-100 border-0"
-                style={{ height: '70vh' }}
-              />
-            )}
+  useEffect(() => {
+    return () => {
+      if (state.src) URL.revokeObjectURL(state.src);
+    };
+  }, [state.src]);
 
-            {isVideo && (
-              <video controls className="w-100" style={{ maxHeight: '70vh' }}>
-                <source src={fileUrl} />
-                Your browser does not support the video tag.
-              </video>
-            )}
+  const [layerFail, setLayerFail] = useState(false); // layered viewer unsupported -> flattened preview
 
-            {isAudio && (
-              <div className="p-4">
-                <audio controls src={fileUrl}>
-                  Your browser does not support audio.
-                </audio>
-              </div>
-            )}
+  useEffect(() => {
+    let on = true;
+    if (isLayered && layerFail) {
+      queueMicrotask(() => on && setState({ loading: true, src: null, text: null }));
+      (async () => {
+        try {
+          const blob = item.remote ? await readServerFile(item.name) : (item.blob || (url ? await (await fetch(url)).blob() : null));
+          if (!blob) throw new Error('No file data available');
+          const previewBlob = k === 'psd' ? await psd(blob, true) : await clip(blob);
+          const src = URL.createObjectURL(previewBlob);
+          if (on) setState({ loading: false, src, text: null });
+        } catch {
+          if (on) setState({ loading: false, src: null, text: null });
+        }
+      })();
+    } else if (k === 'text' && item.size < 2e6) {
+      fetch(url).then((r) => r.text()).then((text) => on && setState({ loading: false, src: null, text })).catch(() => on && setState({ loading: false, src: null, text: null }));
+    } else queueMicrotask(() => on && setState({ loading: false, src: null, text: null }));
+    return () => { on = false; };
+  }, [k, isLayered, url, item.size, item.name, item.remote, item.blob, layerFail]);
 
-            {isText && (
-              <pre
-                className="w-100 p-3 m-0 bg-white"
-                style={{ maxHeight: '70vh', overflow: 'auto', fontSize: '0.85rem' }}
-              >
-                {textResult.status === 'idle'
-                  ? 'Loading text...'
-                  : textResult.status === 'error'
-                    ? `Could not load preview: ${textResult.content}`
-                    : textResult.content}
-              </pre>
-            )}
+  useEffect(() => {
+    const onKey = (e) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
-            {!isImage && !isPdf && !isVideo && !isAudio && !isText && (
-              <div className="text-center p-5">
-                <div className="fs-1 mb-3">📄</div>
-                <p className="text-muted">Preview not available for this file type.</p>
-                <a
-                  href={getDownloadUrl(file.name)}
-                  className="btn btn-primary"
-                >
-                  Download to view
-                </a>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
+  const kindColor = (kind) => COL[kind] || '#5f6368';
+
+  const none = (msg) => (
+    <div className="dv-np">
+      <SvgIcon name="file" color="#9aa0a6" style={{ width: 72, height: 72 }} />
+      <p>{msg}</p>
+      <button className="dv-btn primary" onClick={onDownload}>Download</button>
     </div>
   );
-};
 
-export default FilePreviewModal;
+  let body;
+  if (isLayered && !layerFail) body = <PsdLayerViewer url={url} onFail={() => setLayerFail(true)} />;
+  else if (state.loading) body = <div className="dv-np"><span className="dv-spin" /><p>Rendering preview…</p></div>;
+  else if (k === 'image') body = <img src={url} alt={item.name} />;
+  else if (k === 'video') body = <video src={url} controls autoPlay />;
+  else if (k === 'audio') body = <audio src={url} controls autoPlay />;
+  else if (k === 'pdf') body = <iframe src={url} title={item.name} />;
+  else if (state.text !== null) body = <pre>{state.text}</pre>;
+  else if (k === 'psd' || k === 'clip') body = state.src ? <img src={state.src} alt={item.name} /> : none('No preview available: no embedded preview image could be read');
+  else body = none('No preview available');
+
+  return (
+    <div className="dv-preview">
+      <div className="dv-pt">
+        <button className="dv-ib" onClick={onClose} title="Close"><SvgIcon name="back" /></button>
+        <SvgIcon name={kindIcon(k)} color={kindColor(k) === '#5f6368' ? '#f28b82' : kindColor(k)} />
+        <span>{item.name}</span>
+        <i />
+        <button className="dv-ib" onClick={onDownload} title="Download"><SvgIcon name="dl" /></button>
+        <button className="dv-ib" onClick={onTrash} title="Move to trash"><SvgIcon name="del" /></button>
+      </div>
+      <div className={`dv-pb${isLayered && !layerFail ? ' wide' : ''}`} onClick={(e) => e.target === e.currentTarget && onClose()}>{body}</div>
+    </div>
+  );
+
+}

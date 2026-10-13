@@ -2,13 +2,14 @@ import { useState, useEffect, useRef } from 'react';
 import './Home.scss';
 import {
   P, COL, KL, NAV, kind, icon, sz, dt, zip,
-  psd, clip
+  psd, clip, getThumbnailUrl
 } from '../../utils/driveEngine';
 import {
   copyServerFile, deleteServerFile, getRawFileUrl,
   listServerFiles, readServerFile, renameServerFile, restoreServerFile,
   trashServerFile, uploadServerFile
 } from '../../utils/storageApi';
+import PsdLayerViewer from './FilesList/PsdLayerViewer';
 
 // Render Icon SVG
 export const SvgIcon = ({ name, color, className = '', style = {} }) => (
@@ -21,7 +22,37 @@ export const SvgIcon = ({ name, color, className = '', style = {} }) => (
   </svg>
 );
 
+const CardThumbnail = ({ item, kind: k, getUrl }) => {
+  const [thumb, setThumb] = useState(null);
+
+  useEffect(() => {
+    let on = true;
+    queueMicrotask(() => {
+      if (on) setThumb(null);
+    });
+    if (k === 'psd' || k === 'clip') {
+      getThumbnailUrl(item)
+        .then((url) => {
+          if (on && url) setThumb(url);
+        })
+        .catch(() => {});
+    }
+    return () => {
+      on = false;
+    };
+  }, [item, k]);
+
+  if (k === 'image') {
+    return <img src={getUrl(item)} alt="" draggable="false" />;
+  }
+  if ((k === 'psd' || k === 'clip') && thumb) {
+    return <img src={thumb} alt="" draggable="false" />;
+  }
+  return <SvgIcon name={icon(k)} color={COL[k]} className="bg" />;
+};
+
 const uid = () => Math.random().toString(36).slice(2, 10);
+
 
 const Home = () => {
   const [items, setItems] = useState([]);
@@ -56,7 +87,12 @@ const Home = () => {
 
   const getUrl = (i) => {
     if (i.remote) return getRawFileUrl(i.name);
-    return objectUrls[i.id] || '';
+    return objectUrls[i.id] || i.url || '';
+  };
+
+  const closePreview = () => {
+    setPreviewItem(null);
+    setPreviewContent(null);
   };
 
   const addObjectUrls = (storedItems) => storedItems.map((item) => {
@@ -349,25 +385,27 @@ const Home = () => {
       setPreviewContent(<iframe src={u} title="Preview" />);
     } else if (k === 'psd' || k === 'clip') {
       setPreviewContent(
-        <div className="np">
-          <b className="sp" style={{ display: 'inline-block' }}></b>
-          <p>Rendering preview…</p>
-        </div>
+        <PsdLayerViewer
+          url={u}
+          onFail={async () => {
+            try {
+              const blob = item.remote ? await readServerFile(item.name) : (item.blob || (u ? await (await fetch(u)).blob() : null));
+              const previewBlob = k === 'psd' ? await psd(blob, true) : await clip(blob);
+              const previewUrl = URL.createObjectURL(previewBlob);
+              setPreviewContent(<img src={previewUrl} alt="Preview" />);
+            } catch {
+              setPreviewContent(
+                <div className="np">
+                  <SvgIcon name="file" color="#9aa0a6" className="bg" />
+                  <p>{`No preview available: this ${k.toUpperCase()} could not be rendered`}</p>
+                  <button className="tb pr" onClick={() => downloadItems([item])}>Download</button>
+                </div>
+              );
+            }
+          }}
+        />
       );
-      try {
-        const blob = item.remote ? await readServerFile(item.name) : item.blob;
-        const previewBlob = k === 'psd' ? await psd(blob, true) : await clip(blob);
-        const previewUrl = URL.createObjectURL(previewBlob);
-        setPreviewContent(<img src={previewUrl} alt="Preview" />);
-      } catch {
-        setPreviewContent(
-          <div className="np">
-            <SvgIcon name="file" color="#9aa0a6" className="bg" />
-            <p>No preview available: no embedded preview image could be read</p>
-            <button className="tb pr" onClick={() => downloadItems([item])}>Download</button>
-          </div>
-        );
-      }
+
     } else if (k === 'text' && item.size < 2e6) {
       try {
         const blob = item.remote ? await readServerFile(item.name) : item.blob;
@@ -843,12 +881,9 @@ const Home = () => {
                         <button className="ib" onClick={(e) => { e.stopPropagation(); openContextMenu(e, i); }}><SvgIcon name="more" /></button>
                       </div>
                       <div className="th">
-                        {k === 'image' ? (
-                          <img src={getUrl(i)} alt="" draggable="false" />
-                        ) : (
-                          <SvgIcon name={icon(k)} color={COL[k]} className="bg" />
-                        )}
+                        <CardThumbnail item={i} kind={k} getUrl={getUrl} />
                       </div>
+
                     </div>
                   );
                 })}
@@ -948,14 +983,14 @@ const Home = () => {
       {previewItem && (
         <div className="pv">
           <div className="pt">
-            <button className="ib" title="Close" onClick={() => setPreviewItem(null)}><SvgIcon name="back" /></button>
+            <button className="ib" title="Close" onClick={closePreview}><SvgIcon name="back" /></button>
             <SvgIcon name={icon(kind(previewItem))} color="#f28b82" />
             <span>{previewItem.name}</span>
             <i></i>
             <button className="ib" title="Download" onClick={() => downloadItems([previewItem])}><SvgIcon name="dl" /></button>
-            <button className="ib" title="Move to trash" onClick={() => { setPreviewItem(null); moveToTrash(); }}><SvgIcon name="del" /></button>
+            <button className="ib" title="Move to trash" onClick={() => { closePreview(); moveToTrash(); }}><SvgIcon name="del" /></button>
           </div>
-          <div className="pb" onClick={(e) => { if (e.target.classList.contains('pb')) setPreviewItem(null); }}>
+          <div className="pb" onClick={(e) => { if (e.target.classList.contains('pb')) closePreview(); }}>
             {previewContent}
           </div>
         </div>

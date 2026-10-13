@@ -1,3 +1,6 @@
+import { useEffect, useState } from 'react';
+import { getThumbnailUrl, kind } from '../../../utils/driveEngine';
+
 const formatBytes = (bytes) => {
   if (bytes === 0) return '0 B';
   const k = 1024;
@@ -7,7 +10,7 @@ const formatBytes = (bytes) => {
 };
 
 const getFileIcon = (filename) => {
-  const ext = filename.split('.').pop().toLowerCase();
+  const ext = (filename || '').split('.').pop().toLowerCase();
   if (['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext)) return '🖼️';
   if (['mp4', 'mkv', 'webm'].includes(ext)) return '🎬';
   if (['mp3', 'wav', 'ogg'].includes(ext)) return '🎵';
@@ -15,6 +18,33 @@ const getFileIcon = (filename) => {
   if (['zip', 'rar', 'tar', 'gz'].includes(ext)) return '📦';
   if (['js', 'jsx', 'ts', 'tsx', 'html', 'css', 'json', 'py', 'cpp'].includes(ext)) return '💻';
   return '📄';
+};
+
+const CardIconOrThumb = ({ file }) => {
+  const [thumb, setThumb] = useState(null);
+  const k = kind(file);
+
+  useEffect(() => {
+    let on = true;
+    queueMicrotask(() => {
+      if (on) setThumb(null);
+    });
+    if (k === 'psd' || k === 'clip') {
+      getThumbnailUrl(file)
+        .then((url) => {
+          if (on && url) setThumb(url);
+        })
+        .catch(() => {});
+    }
+    return () => {
+      on = false;
+    };
+  }, [file, k]);
+
+  if (thumb) {
+    return <img src={thumb} alt="" style={{ width: 32, height: 32, objectFit: 'cover', borderRadius: 4 }} />;
+  }
+  return <span className="fs-4">{getFileIcon(file.name)}</span>;
 };
 
 const FileCard = ({ file, onPreview, onDownload, onDelete }) => {
@@ -26,11 +56,12 @@ const FileCard = ({ file, onPreview, onDownload, onDelete }) => {
         onClick={() => onPreview(file)}
       >
         <div className="d-flex align-items-center gap-2 mb-2">
-          <span className="fs-4">{getFileIcon(file.name)}</span>
+          <CardIconOrThumb file={file} />
           <span className="fw-semibold text-truncate" title={file.name}>
             {file.name}
           </span>
         </div>
+
 
         <div className="text-muted small">
           <div>{formatBytes(file.size)}</div>

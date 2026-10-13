@@ -292,6 +292,18 @@ app.post('/api/upload/complete', async (req, res) => {
   }
 });
 
+// In production the built React application can be served by this same
+// process. That keeps the UI and its /api requests on one reachable origin.
+const FRONTEND_DIST = path.resolve(__dirname, '../Server-storage/dist');
+const FRONTEND_INDEX = path.join(FRONTEND_DIST, 'index.html');
+if (fs.existsSync(FRONTEND_INDEX)) {
+  app.use(express.static(FRONTEND_DIST));
+  app.use((req, res, next) => {
+    if (req.method !== 'GET' || req.path.startsWith('/api/')) return next();
+    return res.sendFile(FRONTEND_INDEX);
+  });
+}
+
 if (require.main === module) {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server listening on port ${PORT}`);

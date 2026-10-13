@@ -1,5 +1,9 @@
+import { extractClipPreview } from './clipLayers';
+import { readServerFile } from './storageApi';
+
 // Toàn bộ Paths SVG và dictionary màu/loại file trích xuất trực tiếp
 export const P = {
+
   search: "M15.5 14h-.79l-.28-.27A6.47 6.47 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z",
   add: "M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z",
   folder: "M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z",
@@ -40,7 +44,8 @@ export const COL = {
 
 export const KL = {
   '': 'Any type', folder: 'Folders', image: 'Images', pdf: 'PDFs',
-  doc: 'Documents', sheet: 'Spreadsheets', video: 'Videos', audio: 'Audio', zip: 'Archives'
+  doc: 'Documents', sheet: 'Spreadsheets', video: 'Videos', audio: 'Audio', zip: 'Archives',
+  psd: 'Photoshop (PSD)', clip: 'Clip Studio (CLIP)'
 };
 
 export const NAV = [
@@ -228,50 +233,77 @@ export async function psd(b, full) {
   }
 }
 
-// Thuật toán parse file Clip Studio Paint (.clip / .csp) tìm PNG chunk thumbnail
+// Thuật toán parse file Clip Studio Paint (.clip / .csp) trích xuất PNG preview từ SQLite CanvasPreview
 export async function clip(b) {
   if (b.size > 3e8) throw new Error('File too large');
-  const u = new Uint8Array(await b.arrayBuffer());
-  let best = null;
-  for (let i = 0; i < u.length - 8; i++) {
-    if (
-      u[i] === 0x89 && u[i + 1] === 0x50 && u[i + 2] === 0x4e && u[i + 3] === 0x4f &&
-      u[i + 4] === 13 && u[i + 5] === 10 && u[i + 6] === 26 && u[i + 7] === 10
-    ) {
-      let p = i + 8, ok = false;
-      while (p + 12 <= u.length) {
-        const l = ((u[p] << 24) | (u[p + 1] << 16) | (u[p + 2] << 8) | u[p + 3]) >>> 0;
-        const t = String.fromCharCode(u[p + 4], u[p + 5], u[p + 6], u[p + 7]);
-        if (l > u.length) break;
-        p += 12 + l;
-        if (t === 'IEND') {
-          ok = true;
-          break;
+  try {
+    return await extractClipPreview(b);
+  } catch {
+    // Fallback: sequential PNG chunk scan
+    const u = new Uint8Array(await b.arrayBuffer());
+    let best = null;
+    for (let i = 0; i <= u.length - 8; i++) {
+      if (
+        u[i] === 0x89 && u[i + 1] === 0x50 && u[i + 2] === 0x4e && u[i + 3] === 0x47 &&
+        u[i + 4] === 13 && u[i + 5] === 10 && u[i + 6] === 26 && u[i + 7] === 10
+      ) {
+        let p = i + 8, ok = false;
+        while (p + 12 <= u.length) {
+          const l = ((u[p] << 24) | (u[p + 1] << 16) | (u[p + 2] << 8) | u[p + 3]) >>> 0;
+          const t = String.fromCharCode(u[p + 4], u[p + 5], u[p + 6], u[p + 7]);
+          if (p + 12 + l > u.length) break;
+          p += 12 + l;
+          if (t === 'IEND') {
+            ok = true;
+            break;
+          }
+        }
+        if (ok) {
+          if (!best || p - i > best[1] - best[0]) best = [i, p];
+          i = p - 1;
         }
       }
-      if (ok) {
-        if (!best || p - i > best[1] - best[0]) best = [i, p];
-        i = p - 1;
-      }
     }
+    if (!best) throw new Error('No embedded preview found');
+    return new Blob([u.subarray(best[0], best[1])], { type: 'image/png' });
   }
-  if (!best) throw new Error('No embedded preview found');
-  return new Blob([u.slice(best[0], best[1])], { type: 'image/png' });
 }
 
 // Bộ nhớ cache thumbnail trong phiên làm việc
 const TH = new Map();
 export function getThumbnailUrl(i, full = false) {
-  const key = i.id + (full ? 'f' : '');
+  const key = (i.id || i.name) + (full ? 'f' : '');
   if (!TH.has(key)) {
-    TH.set(
-      key,
-      (async () => {
+    const promise = (async () => {
+      try {
         const k = kind(i);
-        const b = k === 'psd' ? await psd(i.blob, full) : await clip(i.blob);
-        return URL.createObjectURL(b);
-      })().catch(() => null)
-    );
+        let b = null;
+        if (!i.remote && i.blob) {
+          b = i.blob;
+        } else if (i.remote) {
+          b = await readServerFile(i.name);
+        } else if (i.url) {
+          const res = await fetch(i.url);
+          b = await res.blob();
+        } else if (i.name) {
+          b = await readServerFile(i.name);
+        }
+        if (!b) {
+          TH.delete(key);
+          return null;
+        }
+        const previewBlob = k === 'psd' ? await psd(b, full) : await clip(b);
+        if (!previewBlob) {
+          TH.delete(key);
+          return null;
+        }
+        return URL.createObjectURL(previewBlob);
+      } catch {
+        TH.delete(key);
+        return null;
+      }
+    })();
+    TH.set(key, promise);
   }
   return TH.get(key);
-}
+}
