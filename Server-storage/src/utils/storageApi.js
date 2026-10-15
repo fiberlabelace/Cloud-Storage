@@ -24,6 +24,29 @@ const fileEndpoint = (fileName, action = '') =>
 
 export const getRawFileUrl = (fileName) => fileEndpoint(fileName, 'raw/');
 export const getDownloadUrl = (fileName) => fileEndpoint(fileName, 'download/');
+export const getThumbnailUrlServer = (fileName) => fileEndpoint(fileName, 'thumbnail/');
+export const getPreviewUrlServer = (fileName) => fileEndpoint(fileName, 'preview/');
+export const getLayersUrlServer = (fileName) => fileEndpoint(fileName, 'layers/');
+export const getLayerImageUrlServer = (fileName, layerId) =>
+  `${API_BASE}/files/layer/${encodeURIComponent(fileName)}/${encodeURIComponent(layerId)}`;
+
+export const fetchServerLayers = async (fileName) => {
+  const res = await fetch(getLayersUrlServer(fileName));
+  if (!res.ok) throw new Error(`Layers endpoint returned ${res.status}`);
+  return res.json();
+};
+
+export const fetchServerThumbnail = async (fileName) => {
+  const res = await fetch(getThumbnailUrlServer(fileName));
+  if (!res.ok) throw new Error(`Thumbnail endpoint returned ${res.status}`);
+  return res.blob();
+};
+
+export const fetchServerPreview = async (fileName) => {
+  const res = await fetch(getPreviewUrlServer(fileName));
+  if (!res.ok) throw new Error(`Preview endpoint returned ${res.status}`);
+  return res.blob();
+};
 
 export const listServerFiles = async (trash = false) => {
   const query = trash ? '?trash=true' : '';

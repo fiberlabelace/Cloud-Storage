@@ -3,6 +3,7 @@ const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const preprocessor = require('./preprocessor');
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -12,6 +13,7 @@ const TRASH_DIR = path.join(STORAGE_DIR, '.trash');
 
 fs.mkdirSync(STORAGE_DIR, { recursive: true });
 fs.mkdirSync(TEMP_DIR, { recursive: true });
+preprocessor.setStorageDir(STORAGE_DIR);
 
 const activeUploads = new Map();
 
@@ -45,7 +47,7 @@ const listDirectory = async (directory, prefix = '') => {
   const entries = await fs.promises.readdir(directory, { withFileTypes: true });
   const files = [];
   for (const entry of entries) {
-    if (entry.name === '.trash') continue;
+    if (entry.name === '.trash' || entry.name.startsWith('.')) continue;
     const relativeName = prefix ? `${prefix}/${entry.name}` : entry.name;
     const fullPath = path.join(directory, entry.name);
     if (entry.isDirectory()) {
@@ -109,6 +111,69 @@ app.get('/api/files/raw/:filename', (req, res) => {
   });
 });
 
+app.get('/api/files/thumbnail/:filename', async (req, res) => {
+  const filePath = resolveStoredPath(req.params.filename);
+  if (!filePath) return res.status(400).json({ error: 'Invalid file name' });
+  try {
+    const thumbPath = await preprocessor.getOrGenerateThumbnail(filePath, req.params.filename);
+    if (!thumbPath || !fs.existsSync(thumbPath)) {
+      return res.status(404).json({ error: 'Thumbnail not available' });
+    }
+    res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+    res.type('image/webp');
+    res.sendFile(thumbPath, { dotfiles: 'allow' });
+  } catch (err) {
+    respondFileError(res, err, 'Failed to get thumbnail');
+  }
+});
+
+app.get('/api/files/preview/:filename', async (req, res) => {
+  const filePath = resolveStoredPath(req.params.filename);
+  if (!filePath) return res.status(400).json({ error: 'Invalid file name' });
+  try {
+    const previewPath = await preprocessor.getOrGeneratePreview(filePath, req.params.filename);
+    if (!previewPath || !fs.existsSync(previewPath)) {
+      return res.status(404).json({ error: 'Preview not available' });
+    }
+    res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+    res.type('image/webp');
+    res.sendFile(previewPath, { dotfiles: 'allow' });
+  } catch (err) {
+    respondFileError(res, err, 'Failed to get preview');
+  }
+});
+
+app.get('/api/files/layers/:filename', async (req, res) => {
+  const filePath = resolveStoredPath(req.params.filename);
+  if (!filePath) return res.status(400).json({ error: 'Invalid file name' });
+  try {
+    const layersData = await preprocessor.getOrGenerateLayers(filePath, req.params.filename);
+    if (!layersData) {
+      return res.status(404).json({ error: 'Layer data not available' });
+    }
+    res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+    res.json(layersData);
+  } catch (err) {
+    respondFileError(res, err, 'Failed to get layer data');
+  }
+});
+
+app.get('/api/files/layer/:filename/:layerId', async (req, res) => {
+  const filePath = resolveStoredPath(req.params.filename);
+  if (!filePath) return res.status(400).json({ error: 'Invalid file name' });
+  try {
+    const layerPath = await preprocessor.getLayerImagePath(filePath, req.params.filename, req.params.layerId);
+    if (!layerPath || !fs.existsSync(layerPath)) {
+      return res.status(404).json({ error: 'Layer image not available' });
+    }
+    res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+    res.type('image/webp');
+    res.sendFile(layerPath, { dotfiles: 'allow' });
+  } catch (err) {
+    respondFileError(res, err, 'Failed to get layer image');
+  }
+});
+
 app.post('/api/files/trash', async (req, res) => {
   const { fileName } = req.body;
   const filePath = resolveStoredPath(fileName);
@@ -147,6 +212,7 @@ app.delete('/api/files/trash', async (req, res) => {
   if (!trashPath) return res.status(400).json({ error: 'Invalid file name' });
   try {
     await fs.promises.unlink(trashPath);
+    preprocessor.cleanCache(fileName);
     res.json({ message: 'File permanently deleted' });
   } catch (err) {
     if (err.code === 'ENOENT') return res.status(404).json({ error: 'Trashed file not found' });
@@ -163,6 +229,7 @@ app.post('/api/files/rename', async (req, res) => {
     await fs.promises.mkdir(path.dirname(newPath), { recursive: true });
     await fs.promises.copyFile(filePath, newPath, fs.constants.COPYFILE_EXCL);
     await fs.promises.unlink(filePath);
+    preprocessor.renameCache(fileName, newFileName);
     res.json({ message: 'File renamed', fileName: newFileName });
   } catch (err) {
     if (err.code === 'ENOENT') return res.status(404).json({ error: 'File not found' });
@@ -192,6 +259,7 @@ app.delete('/api/files/:filename', async (req, res) => {
   if (!filePath) return res.status(400).json({ error: 'Invalid file name' });
   try {
     await fs.promises.unlink(filePath);
+    preprocessor.cleanCache(req.params.filename);
     res.json({ message: 'File deleted' });
   } catch (err) {
     if (err.code === 'ENOENT') return res.status(404).json({ error: 'File not found' });
@@ -285,6 +353,9 @@ app.post('/api/upload/complete', async (req, res) => {
     await fs.promises.copyFile(upload.tempFilePath, finalPath, fs.constants.COPYFILE_EXCL);
     await fs.promises.unlink(upload.tempFilePath);
     activeUploads.delete(uploadId);
+    preprocessor.enqueue(finalPath, upload.fileName).catch((err) => {
+      console.warn(`[upload] Background preprocessing warning for ${upload.fileName}:`, err.message);
+    });
     res.json({ message: 'Upload complete', fileName: upload.fileName });
   } catch (err) {
     if (err.code === 'EEXIST') return res.status(409).json({ error: 'A file with this name already exists' });

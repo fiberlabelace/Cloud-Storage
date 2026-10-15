@@ -1,0 +1,6 @@
+node_modules/
+dist/
+**/.preview_cache/
+**/temp_chunks/
+.DS_Store
+*.log

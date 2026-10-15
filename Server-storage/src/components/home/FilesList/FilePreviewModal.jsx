@@ -68,7 +68,7 @@ export default function FilePreviewModal({ item, onClose, onDownload, onTrash })
   );
 
   let body;
-  if (isLayered && !layerFail) body = <PsdLayerViewer url={url} onFail={() => setLayerFail(true)} />;
+  if (isLayered && !layerFail) body = <PsdLayerViewer url={url} item={item} onFail={() => setLayerFail(true)} />;
   else if (state.loading) body = <div className="dv-np"><span className="dv-spin" /><p>Rendering preview…</p></div>;
   else if (k === 'image') body = <img src={url} alt={item.name} />;
   else if (k === 'video') body = <video src={url} controls autoPlay />;

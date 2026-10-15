@@ -387,6 +387,7 @@ const Home = () => {
       setPreviewContent(
         <PsdLayerViewer
           url={u}
+          item={item}
           onFail={async () => {
             try {
               const blob = item.remote ? await readServerFile(item.name) : (item.blob || (u ? await (await fetch(u)).blob() : null));

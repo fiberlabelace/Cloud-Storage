@@ -1,5 +1,7 @@
 import { extractClipPreview } from './clipLayers';
-import { readServerFile } from './storageApi';
+import { readServerFile, fetchServerThumbnail, fetchServerPreview, getRawFileUrl } from './storageApi';
+import { getCachedThumbnail, setCachedThumbnail, getCachedPreview, setCachedPreview } from './idbCache';
+import { fetchPsdThumbnailRange, fetchClipThumbnailRange } from './rangeReader';
 
 // Toàn bộ Paths SVG và dictionary màu/loại file trích xuất trực tiếp
 export const P = {
@@ -277,26 +279,68 @@ export function getThumbnailUrl(i, full = false) {
     const promise = (async () => {
       try {
         const k = kind(i);
-        let b = null;
-        if (!i.remote && i.blob) {
-          b = i.blob;
-        } else if (i.remote) {
-          b = await readServerFile(i.name);
-        } else if (i.url) {
-          const res = await fetch(i.url);
-          b = await res.blob();
-        } else if (i.name) {
-          b = await readServerFile(i.name);
+
+        // 1. Check persistent IndexedDB cache first (0.01s instant loading)
+        const cachedBlob = full ? await getCachedPreview(i) : await getCachedThumbnail(i);
+        if (cachedBlob) {
+          return URL.createObjectURL(cachedBlob);
         }
-        if (!b) {
-          TH.delete(key);
-          return null;
+
+        let previewBlob = null;
+
+        // 2. If it's a remote file, attempt ultra-fast server preprocessed WebP (<20ms, ~10KB)
+        if (i.remote && i.name) {
+          try {
+            previewBlob = full
+              ? await fetchServerPreview(i.name)
+              : await fetchServerThumbnail(i.name);
+          } catch {
+            // Server preprocessed endpoint not ready or 404, fall through to range request
+          }
+
+          // 3. If server endpoint wasn't ready, use HTTP Range Request (only fetch first ~500KB)
+          if (!previewBlob) {
+            const rawUrl = getRawFileUrl(i.name);
+            if (k === 'psd') {
+              previewBlob = await fetchPsdThumbnailRange(rawUrl);
+            } else if (k === 'clip') {
+              previewBlob = await fetchClipThumbnailRange(rawUrl);
+            }
+          }
         }
-        const previewBlob = k === 'psd' ? await psd(b, full) : await clip(b);
+
+        // 4. Fallback to client-side parsing of full file blob if needed
+        if (!previewBlob) {
+          let b = null;
+          if (!i.remote && i.blob) {
+            b = i.blob;
+          } else if (i.remote) {
+            b = await readServerFile(i.name);
+          } else if (i.url) {
+            const res = await fetch(i.url);
+            b = await res.blob();
+          } else if (i.name) {
+            b = await readServerFile(i.name);
+          }
+          if (!b) {
+            TH.delete(key);
+            return null;
+          }
+          previewBlob = k === 'psd' ? await psd(b, full) : await clip(b);
+        }
+
         if (!previewBlob) {
           TH.delete(key);
           return null;
         }
+
+        // 5. Store permanently in IndexedDB for subsequent visits
+        if (full) {
+          setCachedPreview(i, previewBlob);
+        } else {
+          setCachedThumbnail(i, previewBlob);
+        }
+
         return URL.createObjectURL(previewBlob);
       } catch {
         TH.delete(key);
